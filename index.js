@@ -536,21 +536,54 @@
     } else {
         start();
     }
-        function createButton() {
-        const existing = document.querySelector(
-            '#st-draft-backup-button'
-        );
+            function createButton() {
+        const qrMenu = document.querySelector('#qr-assistant');
 
-        if (existing) {
+        /*
+         * QR 助手可能比本扩展晚加载。
+         * 找不到菜单就稍后重试。
+         */
+        if (!qrMenu) {
+            setTimeout(createButton, 800);
             return;
         }
 
-        const qrBar = document.querySelector(
-            '#qr--buttons, #qr--bar, .qr--buttons'
-        );
+        /*
+         * 监听 QR 助手菜单重绘。
+         * QR 助手每次打开菜单都会重新生成按钮，
+         * 所以必须监听它的 DOM 变化。
+         */
+        if (qrMenu.dataset.stDraftObserver !== 'true') {
+            const observer = new MutationObserver(() => {
+                addBackupButtonToQrMenu();
+            });
 
-        if (!qrBar) {
-            setTimeout(createButton, 1000);
+            observer.observe(qrMenu, {
+                childList: true,
+                subtree: true,
+            });
+
+            qrMenu.dataset.stDraftObserver = 'true';
+        }
+
+        addBackupButtonToQrMenu();
+    }
+
+    function addBackupButtonToQrMenu() {
+        const rightList = document.querySelector('#qr-list-right');
+
+        if (!rightList) {
+            return;
+        }
+
+        /*
+         * 已经存在就不重复添加。
+         */
+        if (
+            rightList.querySelector(
+                '#st-draft-backup-button'
+            )
+        ) {
             return;
         }
 
@@ -558,16 +591,21 @@
 
         button.id = 'st-draft-backup-button';
         button.type = 'button';
-        button.className = 'qr--button';
-        button.textContent = '📦备份';
-        button.title = '打开输入框备份';
+        button.className = 'action-item';
+        button.dataset.label = '📦备份';
+
+        const span = document.createElement('span');
+        span.textContent = '📦备份';
+
+        button.appendChild(span);
 
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
+
             openBackupPanel();
         });
 
-        qrBar.appendChild(button);
+        rightList.appendChild(button);
     }
 })();
