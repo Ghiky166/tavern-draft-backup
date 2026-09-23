@@ -2,18 +2,26 @@
     'use strict';
 
     const STORAGE_KEY = 'st_mobile_draft_backup_v1';
+    const THEME_KEY = 'st_mobile_draft_theme';
     const TEXTAREA_SELECTOR = '#send_textarea';
+    const QR_MENU_SELECTOR = '#qr-assistant';
+    const QR_LIST_SELECTOR = '#qr-list-right';
+    const BACKUP_BUTTON_ID = 'st-draft-backup-button';
+    const PANEL_ID = 'st-draft-backup-panel';
+
     const SAVE_DELAY = 400;
     const CHECK_DELAY = 500;
 
     let saveTimer = null;
     let lastText = null;
     let currentChatKey = null;
-    let initialized = false;
+    let inputInitialized = false;
+    let qrObserverStarted = false;
+    let qrRetryTimer = null;
 
     function getContext() {
         try {
-            return SillyTavern.getContext();
+            return window.SillyTavern?.getContext?.() || {};
         } catch {
             return {};
         }
@@ -23,79 +31,109 @@
         return document.querySelector(TEXTAREA_SELECTOR);
     }
 
-    function getStorage() {
+    function getDraftData() {
         try {
-            return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            return JSON.parse(
+                localStorage.getItem(STORAGE_KEY) || '{}'
+            );
         } catch {
             return {};
         }
     }
 
-    function setStorage(data) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    function saveDraftData(data) {
+        localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify(data)
+        );
     }
 
-    function getChatInfo() {
+    function getCurrentChatInfo() {
         const context = getContext();
 
-        let chatId =
-            context.getCurrentChatId?.() ||
-            context.chatId ||
-            context.chat_id ||
-            '';
+        let chatId = '';
 
-        let characterId =
-            context.characterId ||
-            context.character_id ||
-            '';
+        try {
+            chatId =
+                context.getCurrentChatId?.() ||
+                context.chatId ||
+                context.chat_id ||
+                '';
+        } catch {
+            chatId = '';
+        }
 
-        let groupId =
-            context.groupId ||
-            context.group_id ||
-            '';
-
-        /*
-         * 如果酒馆没有提供聊天 ID，就用当前地址作为备用标识。
-         */
         if (!chatId) {
             chatId = location.href;
         }
 
-        const character =
-            context.characters?.[characterId] ||
-            context.character ||
-            null;
+        const characterId =
+            context.characterId ||
+            context.character_id ||
+            '';
 
-        const characterName =
-            character?.name ||
-            character?.data?.name ||
-            (groupId ? `群聊 ${groupId}` : '当前聊天');
+        const groupId =
+            context.groupId ||
+            context.group_id ||
+            '';
 
-        const key = [
-            groupId ? `group-${groupId}` : `character-${characterId}`,
-            `chat-${chatId}`,
-        ].join('__');
+        let characterName = '';
+
+        try {
+            const character =
+                context.characters?.[characterId] ||
+                context.character ||
+                null;
+
+            characterName =
+                character?.name ||
+                character?.data?.name ||
+                '';
+        } catch {
+            characterName = '';
+        }
+
+        if (!characterName) {
+            characterName = groupId
+                ? `群聊 ${groupId}`
+                : '当前聊天';
+        }
+
+        const keyPrefix = groupId
+            ? `group-${groupId}`
+            : `character-${characterId || 'unknown'}`;
 
         return {
-            key,
+            key: `${keyPrefix}__chat-${String(chatId)}`,
             name: characterName,
             chatId: String(chatId),
             groupId: String(groupId || ''),
-            updatedAt: Date.now(),
         };
     }
 
-    function saveDraft(text) {
-        const info = getChatInfo();
-        const drafts = getStorage();
+    function updateStatus(text) {
+        const status = document.querySelector(
+            '#st-draft-backup-status'
+        );
+
+        if (status) {
+            status.textContent = text;
+        }
+    }
+
+    function saveCurrentDraft(text) {
+        const info = getCurrentChatInfo();
+        const drafts = getDraftData();
 
         /*
-         * 输入框被清空，视为消息已经发送或草稿被主动清除。
+         * 输入框为空时，删除当前聊天的草稿。
+         * 发送消息后酒馆通常会清空输入框，
+         * 这样旧草稿不会在下次打开时重复出现。
          */
         if (!text) {
             delete drafts[info.key];
-            setStorage(drafts);
-            updateStatus('已清除当前草稿');
+            saveDraftData(drafts);
+            updateStatus('当前没有未发送草稿');
             return;
         }
 
@@ -108,7 +146,7 @@
             updatedAt: Date.now(),
         };
 
-        setStorage(drafts);
+        saveDraftData(drafts);
         updateStatus('已自动保存');
     }
 
@@ -116,7 +154,7 @@
         clearTimeout(saveTimer);
 
         saveTimer = setTimeout(() => {
-            saveDraft(text);
+            saveCurrentDraft(text);
         }, SAVE_DELAY);
     }
 
@@ -127,8 +165,8 @@
             return;
         }
 
-        const info = getChatInfo();
-        const drafts = getStorage();
+        const info = getCurrentChatInfo();
+        const drafts = getDraftData();
         const draft = drafts[info.key];
 
         if (!draft?.text) {
@@ -136,7 +174,7 @@
         }
 
         /*
-         * 默认不覆盖用户当前已经输入的文字。
+         * 默认不覆盖用户当前已经输入的内容。
          */
         if (!force && textarea.value) {
             return;
@@ -157,122 +195,144 @@
             return '';
         }
 
-        return new Date(timestamp).toLocaleString();
-    }
-
-    function escapeHTML(text) {
-        return String(text)
-            .replaceAll('&', '&amp;')
-            .replaceAll('<', '&lt;')
-            .replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;')
-            .replaceAll("'", '&#039;');
-    }
-
-    function updateStatus(text) {
-        const status = document.querySelector('#st-draft-backup-status');
-
-        if (status) {
-            status.textContent = text;
+        try {
+            return new Date(timestamp).toLocaleString();
+        } catch {
+            return '';
         }
     }
 
-    function createButton() {
-        if (document.querySelector('#st-draft-backup-button')) {
-            return;
+    function createElement(tag, className, text) {
+        const element = document.createElement(tag);
+
+        if (className) {
+            element.className = className;
         }
 
-        const button = document.createElement('button');
+        if (text !== undefined) {
+            element.textContent = text;
+        }
 
-        button.id = 'st-draft-backup-button';
-        button.type = 'button';
-        button.textContent = '备份';
-        button.title = '打开输入框备份';
-
-        Object.assign(button.style, {
-            position: 'fixed',
-            right: '12px',
-            bottom: '88px',
-            zIndex: '99999',
-            padding: '8px 12px',
-            border: '1px solid currentColor',
-            borderRadius: '8px',
-            background: 'var(--SmartThemeBodyColor, #333)',
-            color: 'var(--SmartThemeFontColor, #fff)',
-            fontSize: '14px',
-            opacity: '0.9',
-        });
-
-        button.addEventListener('click', openBackupPanel);
-
-        document.body.appendChild(button);
+        return element;
     }
 
-    function createPanel() {
-        if (document.querySelector('#st-draft-backup-panel')) {
+    function createBackupPanel() {
+        if (document.querySelector(`#${PANEL_ID}`)) {
             return;
         }
 
         const panel = document.createElement('div');
+        panel.id = PANEL_ID;
+        panel.dataset.theme =
+            localStorage.getItem(THEME_KEY) || 'light';
 
-        panel.id = 'st-draft-backup-panel';
+        const box = document.createElement('div');
+        box.id = 'st-draft-backup-box';
 
-        Object.assign(panel.style, {
-            display: 'none',
-            position: 'fixed',
-            inset: '0',
-            zIndex: '100000',
-            background: 'rgba(0, 0, 0, 0.65)',
-            padding: '20px',
-            overflowY: 'auto',
-        });
+        const header = document.createElement('div');
+        header.id = 'st-draft-backup-header';
 
-        panel.innerHTML = `
-            <div id="st-draft-backup-box" style="
-                max-width: 600px;
-                margin: 20px auto;
-                padding: 16px;
-                border-radius: 12px;
-                background: var(--SmartThemeBodyColor, #222);
-                color: var(--SmartThemeFontColor, #fff);
-                box-shadow: 0 4px 20px rgba(0,0,0,.5);
-            ">
-                <div style="
-                    display:flex;
-                    align-items:center;
-                    justify-content:space-between;
-                    gap:8px;
-                    margin-bottom:12px;
-                ">
-                    <strong style="font-size:18px;">输入框备份</strong>
-                    <button id="st-draft-backup-close" type="button">关闭</button>
-                </div>
+        const title = createElement(
+            'strong',
+            'st-draft-backup-title',
+            '输入框备份'
+        );
 
-                <div id="st-draft-backup-status" style="
-                    margin-bottom:12px;
-                    opacity:.75;
-                    font-size:13px;
-                ">备份保存在当前浏览器</div>
+        const closeButton = createElement(
+            'button',
+            '',
+            '关闭'
+        );
 
-                <div id="st-draft-backup-list"></div>
+        closeButton.id = 'st-draft-backup-close';
+        closeButton.type = 'button';
 
-                <div style="
-                    display:flex;
-                    gap:8px;
-                    margin-top:16px;
-                ">
-                    <button id="st-draft-backup-refresh" type="button">
-                        刷新列表
-                    </button>
+        header.appendChild(title);
+        header.appendChild(closeButton);
 
-                    <button id="st-draft-backup-clear-all" type="button">
-                        删除全部
-                    </button>
-                </div>
-            </div>
-        `;
+        const themeArea = document.createElement('div');
+        themeArea.id = 'st-draft-backup-theme-area';
 
+        const themeLabel = createElement(
+            'span',
+            '',
+            '外观'
+        );
+
+        const themeButtons = document.createElement('div');
+        themeButtons.className = 'st-draft-backup-theme-buttons';
+
+        const lightButton = createElement(
+            'button',
+            '',
+            '白色'
+        );
+
+        lightButton.id = 'st-draft-backup-theme-light';
+        lightButton.type = 'button';
+
+        const darkButton = createElement(
+            'button',
+            '',
+            '黑色'
+        );
+
+        darkButton.id = 'st-draft-backup-theme-dark';
+        darkButton.type = 'button';
+
+        themeButtons.appendChild(lightButton);
+        themeButtons.appendChild(darkButton);
+
+        themeArea.appendChild(themeLabel);
+        themeArea.appendChild(themeButtons);
+
+        const status = createElement(
+            'div',
+            '',
+            '备份保存在当前浏览器'
+        );
+
+        status.id = 'st-draft-backup-status';
+
+        const list = document.createElement('div');
+        list.id = 'st-draft-backup-list';
+
+        const footer = document.createElement('div');
+        footer.id = 'st-draft-backup-footer';
+
+        const refreshButton = createElement(
+            'button',
+            '',
+            '刷新列表'
+        );
+
+        refreshButton.id = 'st-draft-backup-refresh';
+        refreshButton.type = 'button';
+
+        const clearButton = createElement(
+            'button',
+            '',
+            '删除全部'
+        );
+
+        clearButton.id = 'st-draft-backup-clear-all';
+        clearButton.type = 'button';
+
+        footer.appendChild(refreshButton);
+        footer.appendChild(clearButton);
+
+        box.appendChild(header);
+        box.appendChild(themeArea);
+        box.appendChild(status);
+        box.appendChild(list);
+        box.appendChild(footer);
+
+        panel.appendChild(box);
         document.body.appendChild(panel);
+
+        closeButton.addEventListener('click', () => {
+            closeBackupPanel();
+        });
 
         panel.addEventListener('click', event => {
             if (event.target === panel) {
@@ -280,149 +340,213 @@
             }
         });
 
-        panel.querySelector('#st-draft-backup-close')
-            .addEventListener('click', closeBackupPanel);
+        lightButton.addEventListener('click', () => {
+            setBackupTheme('light');
+        });
 
-        panel.querySelector('#st-draft-backup-refresh')
-            .addEventListener('click', renderBackupList);
+        darkButton.addEventListener('click', () => {
+            setBackupTheme('dark');
+        });
 
-        panel.querySelector('#st-draft-backup-clear-all')
-            .addEventListener('click', () => {
-                if (!confirm('确定删除全部输入备份吗？')) {
-                    return;
-                }
+        refreshButton.addEventListener('click', () => {
+            renderBackupList();
+        });
 
-                localStorage.removeItem(STORAGE_KEY);
-                renderBackupList();
-                updateStatus('已删除全部备份');
-            });
+        clearButton.addEventListener('click', () => {
+            const drafts = getDraftData();
+            const count = Object.keys(drafts).length;
 
-        panel.querySelector('#st-draft-backup-list')
-            .addEventListener('click', event => {
-                const restoreButton =
-                    event.target.closest('[data-restore-key]');
+            if (!count) {
+                updateStatus('没有可删除的备份');
+                return;
+            }
 
-                const deleteButton =
-                    event.target.closest('[data-delete-key]');
+            if (!confirm(`确定删除全部 ${count} 条备份吗？`)) {
+                return;
+            }
 
-                if (restoreButton) {
-                    restoreDraftByKey(
-                        restoreButton.dataset.restoreKey,
-                    );
-                }
+            localStorage.removeItem(STORAGE_KEY);
+            renderBackupList();
+            updateStatus('已删除全部备份');
+        });
 
-                if (deleteButton) {
-                    deleteDraftByKey(
-                        deleteButton.dataset.deleteKey,
-                    );
-                }
-            });
+        list.addEventListener('click', event => {
+            const restoreButton =
+                event.target.closest(
+                    '[data-st-restore-key]'
+                );
+
+            const deleteButton =
+                event.target.closest(
+                    '[data-st-delete-key]'
+                );
+
+            if (restoreButton) {
+                restoreDraft(
+                    restoreButton.dataset.stRestoreKey
+                );
+            }
+
+            if (deleteButton) {
+                deleteDraft(
+                    deleteButton.dataset.stDeleteKey
+                );
+            }
+        });
     }
 
-    function renderBackupList() {
-        const list = document.querySelector('#st-draft-backup-list');
+    function setBackupTheme(theme) {
+        const panel = document.querySelector(
+            `#${PANEL_ID}`
+        );
 
-        if (!list) {
+        if (!panel) {
             return;
         }
 
-        const drafts = Object.values(getStorage())
-            .sort((a, b) => b.updatedAt - a.updatedAt);
+        const finalTheme =
+            theme === 'dark' ? 'dark' : 'light';
 
-        if (!drafts.length) {
-            list.innerHTML = `
-                <div style="padding:20px 0; opacity:.7;">
-                    暂时没有备份。
-                </div>
-            `;
-            return;
-        }
+        panel.dataset.theme = finalTheme;
+        localStorage.setItem(THEME_KEY, finalTheme);
 
-        list.innerHTML = drafts.map(draft => `
-            <div style="
-                margin-bottom:10px;
-                padding:12px;
-                border:1px solid currentColor;
-                border-radius:8px;
-            ">
-                <div style="font-weight:bold;">
-                    ${escapeHTML(draft.name || '未命名聊天')}
-                </div>
-
-                <div style="
-                    margin:4px 0 8px;
-                    opacity:.7;
-                    font-size:12px;
-                ">
-                    ${escapeHTML(formatTime(draft.updatedAt))}
-                </div>
-
-                <div style="
-                    max-height:80px;
-                    overflow:hidden;
-                    white-space:pre-wrap;
-                    opacity:.85;
-                    font-size:13px;
-                ">
-                    ${escapeHTML(draft.text)}
-                </div>
-
-                <div style="
-                    display:flex;
-                    gap:8px;
-                    margin-top:10px;
-                ">
-                    <button
-                        type="button"
-                        data-restore-key="${escapeHTML(draft.key)}"
-                    >
-                        恢复
-                    </button>
-
-                    <button
-                        type="button"
-                        data-delete-key="${escapeHTML(draft.key)}"
-                    >
-                        删除
-                    </button>
-                </div>
-            </div>
-        `).join('');
+        updateStatus(
+            finalTheme === 'dark'
+                ? '已切换为黑色外观'
+                : '已切换为白色外观'
+        );
     }
 
     function openBackupPanel() {
-        createPanel();
+        createBackupPanel();
         renderBackupList();
 
-        const panel = document.querySelector('#st-draft-backup-panel');
+        const panel = document.querySelector(
+            `#${PANEL_ID}`
+        );
 
         if (panel) {
+            panel.dataset.theme =
+                localStorage.getItem(THEME_KEY) || 'light';
+
             panel.style.display = 'block';
         }
     }
 
     function closeBackupPanel() {
-        const panel = document.querySelector('#st-draft-backup-panel');
+        const panel = document.querySelector(
+            `#${PANEL_ID}`
+        );
 
         if (panel) {
             panel.style.display = 'none';
         }
     }
 
-    function restoreDraftByKey(key) {
-        const drafts = getStorage();
+    function renderBackupList() {
+        createBackupPanel();
+
+        const list = document.querySelector(
+            '#st-draft-backup-list'
+        );
+
+        if (!list) {
+            return;
+        }
+
+        list.innerHTML = '';
+
+        const drafts = Object.values(getDraftData())
+            .sort((a, b) => {
+                return (b.updatedAt || 0) -
+                    (a.updatedAt || 0);
+            });
+
+        if (!drafts.length) {
+            const empty = createElement(
+                'div',
+                'st-draft-backup-empty',
+                '暂时没有备份'
+            );
+
+            list.appendChild(empty);
+            return;
+        }
+
+        drafts.forEach(draft => {
+            const card = createElement(
+                'div',
+                'st-draft-backup-card'
+            );
+
+            const name = createElement(
+                'div',
+                'st-draft-backup-card-name',
+                draft.name || '未命名聊天'
+            );
+
+            const time = createElement(
+                'div',
+                'st-draft-backup-card-time',
+                formatTime(draft.updatedAt)
+            );
+
+            const preview = createElement(
+                'div',
+                'st-draft-backup-card-preview',
+                draft.text || ''
+            );
+
+            const actions = createElement(
+                'div',
+                'st-draft-backup-card-actions'
+            );
+
+            const restoreButton = createElement(
+                'button',
+                '',
+                '恢复'
+            );
+
+            restoreButton.type = 'button';
+            restoreButton.dataset.stRestoreKey =
+                draft.key;
+
+            const deleteButton = createElement(
+                'button',
+                '',
+                '删除'
+            );
+
+            deleteButton.type = 'button';
+            deleteButton.dataset.stDeleteKey =
+                draft.key;
+
+            actions.appendChild(restoreButton);
+            actions.appendChild(deleteButton);
+
+            card.appendChild(name);
+            card.appendChild(time);
+            card.appendChild(preview);
+            card.appendChild(actions);
+
+            list.appendChild(card);
+        });
+    }
+
+    function restoreDraft(key) {
+        const drafts = getDraftData();
         const draft = drafts[key];
 
-        if (!draft) {
-            alert('找不到这条备份。');
-            renderBackupList();
+        if (!draft?.text) {
+            updateStatus('找不到这条备份');
             return;
         }
 
         const textarea = getTextarea();
 
         if (!textarea) {
-            alert('找不到酒馆输入框。');
+            updateStatus('找不到酒馆输入框');
             return;
         }
 
@@ -433,18 +557,110 @@
         }));
 
         lastText = textarea.value;
+
         closeBackupPanel();
-        updateStatus('已恢复备份');
     }
 
-    function deleteDraftByKey(key) {
-        const drafts = getStorage();
+    function deleteDraft(key) {
+        const drafts = getDraftData();
+
+        if (!drafts[key]) {
+            return;
+        }
 
         delete drafts[key];
-        setStorage(drafts);
+        saveDraftData(drafts);
 
         renderBackupList();
         updateStatus('已删除备份');
+    }
+
+    function addBackupButtonToQrMenu() {
+        const rightList = document.querySelector(
+            QR_LIST_SELECTOR
+        );
+
+        if (!rightList) {
+            return;
+        }
+
+        const oldButton = document.querySelector(
+            `#${BACKUP_BUTTON_ID}`
+        );
+
+        /*
+         * 如果旧版本残留了右下角悬浮按钮，
+         * 先移除它。
+         */
+        if (
+            oldButton &&
+            !rightList.contains(oldButton)
+        ) {
+            oldButton.remove();
+        }
+
+        if (
+            rightList.querySelector(
+                `#${BACKUP_BUTTON_ID}`
+            )
+        ) {
+            return;
+        }
+
+        const button = document.createElement('button');
+
+        button.id = BACKUP_BUTTON_ID;
+        button.type = 'button';
+        button.className = 'action-item';
+        button.dataset.label = '📦备份';
+        button.title = '打开输入框备份';
+
+        const span = document.createElement('span');
+        span.textContent = '📦备份';
+
+        button.appendChild(span);
+
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            openBackupPanel();
+        });
+
+        rightList.appendChild(button);
+    }
+
+    function watchQrAssistant() {
+        const qrMenu = document.querySelector(
+            QR_MENU_SELECTOR
+        );
+
+        if (!qrMenu) {
+            if (!qrRetryTimer) {
+                qrRetryTimer = setTimeout(() => {
+                    qrRetryTimer = null;
+                    watchQrAssistant();
+                }, 1000);
+            }
+
+            return;
+        }
+
+        addBackupButtonToQrMenu();
+
+        if (qrObserverStarted) {
+            return;
+        }
+
+        qrObserverStarted = true;
+
+        const observer = new MutationObserver(() => {
+            addBackupButtonToQrMenu();
+        });
+
+        observer.observe(qrMenu, {
+            childList: true,
+            subtree: true,
+        });
     }
 
     function checkInput() {
@@ -454,24 +670,27 @@
             return;
         }
 
-        const info = getChatInfo();
+        const info = getCurrentChatInfo();
 
         if (info.key !== currentChatKey) {
             currentChatKey = info.key;
+            inputInitialized = false;
             lastText = textarea.value;
 
             /*
-             * 切换聊天后，只有输入框为空才自动恢复。
+             * 切换聊天时，只有输入框为空才恢复。
              */
             if (!textarea.value) {
-                restoreCurrentDraft();
+                setTimeout(() => {
+                    restoreCurrentDraft();
+                }, 300);
             }
 
             return;
         }
 
-        if (!initialized) {
-            initialized = true;
+        if (!inputInitialized) {
+            inputInitialized = true;
             lastText = textarea.value;
             return;
         }
@@ -485,20 +704,24 @@
         }
     }
 
-    document.addEventListener('input', event => {
-        const textarea = event.target;
+    document.addEventListener(
+        'input',
+        event => {
+            const target = event.target;
 
-        if (!(textarea instanceof HTMLTextAreaElement)) {
-            return;
-        }
+            if (!(target instanceof HTMLTextAreaElement)) {
+                return;
+            }
 
-        if (textarea.id !== 'send_textarea') {
-            return;
-        }
+            if (target.id !== 'send_textarea') {
+                return;
+            }
 
-        lastText = textarea.value;
-        scheduleSave(textarea.value);
-    }, true);
+            lastText = target.value;
+            scheduleSave(target.value);
+        },
+        true
+    );
 
     window.addEventListener('beforeunload', () => {
         const textarea = getTextarea();
@@ -508,7 +731,7 @@
         }
 
         clearTimeout(saveTimer);
-        saveDraft(textarea.value);
+        saveCurrentDraft(textarea.value);
     });
 
     document.addEventListener('keydown', event => {
@@ -518,94 +741,33 @@
     });
 
     function start() {
-        createButton();
-        createPanel();
+        createBackupPanel();
+        watchQrAssistant();
         checkInput();
 
-        setInterval(checkInput, CHECK_DELAY);
+        setInterval(() => {
+            checkInput();
+            watchQrAssistant();
+        }, CHECK_DELAY);
 
         setTimeout(() => {
             restoreCurrentDraft();
         }, 1200);
 
-        console.log('[输入框备份] 扩展已启动');
+        console.log(
+            '[输入框实时备份] 已启动'
+        );
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', start);
+    if (
+        document.readyState === 'loading'
+    ) {
+        document.addEventListener(
+            'DOMContentLoaded',
+            start,
+            { once: true }
+        );
     } else {
         start();
-    }
-            function createButton() {
-        const qrMenu = document.querySelector('#qr-assistant');
-
-        /*
-         * QR 助手可能比本扩展晚加载。
-         * 找不到菜单就稍后重试。
-         */
-        if (!qrMenu) {
-            setTimeout(createButton, 800);
-            return;
-        }
-
-        /*
-         * 监听 QR 助手菜单重绘。
-         * QR 助手每次打开菜单都会重新生成按钮，
-         * 所以必须监听它的 DOM 变化。
-         */
-        if (qrMenu.dataset.stDraftObserver !== 'true') {
-            const observer = new MutationObserver(() => {
-                addBackupButtonToQrMenu();
-            });
-
-            observer.observe(qrMenu, {
-                childList: true,
-                subtree: true,
-            });
-
-            qrMenu.dataset.stDraftObserver = 'true';
-        }
-
-        addBackupButtonToQrMenu();
-    }
-
-    function addBackupButtonToQrMenu() {
-        const rightList = document.querySelector('#qr-list-right');
-
-        if (!rightList) {
-            return;
-        }
-
-        /*
-         * 已经存在就不重复添加。
-         */
-        if (
-            rightList.querySelector(
-                '#st-draft-backup-button'
-            )
-        ) {
-            return;
-        }
-
-        const button = document.createElement('button');
-
-        button.id = 'st-draft-backup-button';
-        button.type = 'button';
-        button.className = 'action-item';
-        button.dataset.label = '📦备份';
-
-        const span = document.createElement('span');
-        span.textContent = '📦备份';
-
-        button.appendChild(span);
-
-        button.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-
-            openBackupPanel();
-        });
-
-        rightList.appendChild(button);
     }
 })();
