@@ -536,4 +536,38 @@
     } else {
         start();
     }
+        function createButton() {
+        const existing = document.querySelector(
+            '#st-draft-backup-button'
+        );
+
+        if (existing) {
+            return;
+        }
+
+        const qrBar = document.querySelector(
+            '#qr--buttons, #qr--bar, .qr--buttons'
+        );
+
+        if (!qrBar) {
+            setTimeout(createButton, 1000);
+            return;
+        }
+
+        const button = document.createElement('button');
+
+        button.id = 'st-draft-backup-button';
+        button.type = 'button';
+        button.className = 'qr--button';
+        button.textContent = '📦备份';
+        button.title = '打开输入框备份';
+
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            openBackupPanel();
+        });
+
+        qrBar.appendChild(button);
+    }
 })();
