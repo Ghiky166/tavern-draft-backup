@@ -2,12 +2,15 @@
     'use strict';
 
     const STORAGE_KEY = 'st_mobile_draft_backup_v1';
-    const THEME_KEY = 'st_mobile_draft_theme';
+    const THEME_KEY = 'st_mobile_draft_theme_v1';
     const TEXTAREA_SELECTOR = '#send_textarea';
+
+    const PANEL_ID = 'st-draft-backup-panel';
+    const BUTTON_ID = 'st-draft-backup-button';
+    const STYLE_ID = 'st-draft-backup-style';
+
     const QR_MENU_SELECTOR = '#qr-assistant';
     const QR_LIST_SELECTOR = '#qr-list-right';
-    const BACKUP_BUTTON_ID = 'st-draft-backup-button';
-    const PANEL_ID = 'st-draft-backup-panel';
 
     const SAVE_DELAY = 400;
     const CHECK_DELAY = 500;
@@ -15,9 +18,296 @@
     let saveTimer = null;
     let lastText = null;
     let currentChatKey = null;
-    let inputInitialized = false;
+    let initialized = false;
     let qrObserverStarted = false;
-    let qrRetryTimer = null;
+
+    function injectStyle() {
+        if (document.getElementById(STYLE_ID)) {
+            return;
+        }
+
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+
+        style.textContent = `
+            #${PANEL_ID} {
+                display: none;
+                position: fixed;
+                inset: 0;
+                z-index: 100000;
+                padding: 18px;
+                overflow-y: auto;
+                background: #e9e9e9;
+                color: #222;
+                box-sizing: border-box;
+            }
+
+            #${PANEL_ID},
+            #${PANEL_ID} * {
+                box-sizing: border-box;
+            }
+
+            #st-draft-backup-box {
+                width: min(100%, 640px);
+                margin: 24px auto;
+                padding: 18px;
+                border: 1px solid #cfcfcf;
+                border-radius: 14px;
+                background: #ffffff;
+                color: #222222;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+                font-family: inherit;
+            }
+
+            #st-draft-backup-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                margin-bottom: 14px;
+            }
+
+            #st-draft-backup-title {
+                font-size: 18px;
+                font-weight: 700;
+                letter-spacing: 0.02em;
+            }
+
+            #st-draft-backup-theme-area {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 14px;
+                padding: 12px;
+                border: 1px solid #dddddd;
+                border-radius: 10px;
+                background: #f7f7f7;
+            }
+
+            #st-draft-backup-theme-area > span {
+                font-size: 14px;
+                color: #555;
+            }
+
+            .st-draft-backup-theme-buttons {
+                display: flex;
+                gap: 8px;
+            }
+
+            #st-draft-backup-status {
+                margin-bottom: 12px;
+                padding: 9px 10px;
+                border: 1px solid #e2e2e2;
+                border-radius: 9px;
+                background: #fafafa;
+                color: #666;
+                font-size: 13px;
+            }
+
+            #st-draft-backup-list {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .st-draft-backup-empty {
+                padding: 24px 12px;
+                border: 1px solid #e0e0e0;
+                border-radius: 10px;
+                background: #fafafa;
+                color: #777;
+                text-align: center;
+            }
+
+            .st-draft-backup-card {
+                padding: 13px;
+                border: 1px solid #dcdcdc;
+                border-radius: 11px;
+                background: #fdfdfd;
+                color: #222;
+            }
+
+            .st-draft-backup-card-name {
+                font-weight: 700;
+                color: #111;
+                margin-bottom: 4px;
+            }
+
+            .st-draft-backup-card-time {
+                margin-bottom: 8px;
+                color: #888;
+                font-size: 12px;
+            }
+
+            .st-draft-backup-card-preview {
+                max-height: 96px;
+                overflow: hidden;
+                white-space: pre-wrap;
+                word-break: break-word;
+                color: #333;
+                font-size: 13px;
+                line-height: 1.45;
+            }
+
+            .st-draft-backup-card-actions {
+                display: flex;
+                gap: 8px;
+                margin-top: 10px;
+            }
+
+            #st-draft-backup-footer {
+                display: flex;
+                gap: 8px;
+                margin-top: 14px;
+            }
+
+            #${PANEL_ID} button {
+                min-height: 34px;
+                padding: 6px 12px;
+                border: 1px solid #bfbfbf;
+                border-radius: 8px;
+                background: #eeeeee;
+                color: #222222;
+                font: inherit;
+                cursor: pointer;
+                transition:
+                    background-color 0.15s ease,
+                    border-color 0.15s ease,
+                    transform 0.12s ease;
+            }
+
+            #${PANEL_ID} button:hover {
+                border-color: #888888;
+                background: #e3e3e3;
+            }
+
+            #${PANEL_ID} button:active {
+                transform: scale(0.97);
+            }
+
+            #st-draft-backup-close {
+                background: #ffffff;
+            }
+
+            #st-draft-backup-theme-light.is-active,
+            #st-draft-backup-theme-dark.is-active {
+                border-color: #222222;
+                background: #222222;
+                color: #ffffff;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] {
+                background: #050505;
+                color: #f2f2f2;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] #st-draft-backup-box {
+                border-color: #333333;
+                background: #111111;
+                color: #f2f2f2;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+            }
+
+            #${PANEL_ID}[data-theme="dark"] #st-draft-backup-theme-area {
+                border-color: #333333;
+                background: #181818;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] #st-draft-backup-theme-area > span {
+                color: #cccccc;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] #st-draft-backup-status {
+                border-color: #333333;
+                background: #181818;
+                color: #bbbbbb;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] .st-draft-backup-empty {
+                border-color: #333333;
+                background: #181818;
+                color: #aaaaaa;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] .st-draft-backup-card {
+                border-color: #333333;
+                background: #181818;
+                color: #f2f2f2;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] .st-draft-backup-card-name {
+                color: #ffffff;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] .st-draft-backup-card-time {
+                color: #999999;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] .st-draft-backup-card-preview {
+                color: #dddddd;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] button {
+                border-color: #555555;
+                background: #222222;
+                color: #f2f2f2;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] button:hover {
+                border-color: #aaaaaa;
+                background: #303030;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] #st-draft-backup-close {
+                background: #151515;
+            }
+
+            #${PANEL_ID}[data-theme="dark"] #st-draft-backup-theme-light.is-active,
+            #${PANEL_ID}[data-theme="dark"] #st-draft-backup-theme-dark.is-active {
+                border-color: #ffffff;
+                background: #ffffff;
+                color: #000000;
+            }
+
+            #${BUTTON_ID}.action-item {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            @media (max-width: 600px) {
+                #${PANEL_ID} {
+                    padding: 10px;
+                }
+
+                #st-draft-backup-box {
+                    margin: 10px auto;
+                    padding: 14px;
+                    border-radius: 12px;
+                }
+
+                #st-draft-backup-theme-area {
+                    align-items: stretch;
+                    flex-direction: column;
+                }
+
+                .st-draft-backup-theme-buttons {
+                    width: 100%;
+                }
+
+                .st-draft-backup-theme-buttons button {
+                    flex: 1;
+                }
+
+                #st-draft-backup-footer {
+                    flex-direction: column;
+                }
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
 
     function getContext() {
         try {
@@ -31,37 +321,26 @@
         return document.querySelector(TEXTAREA_SELECTOR);
     }
 
-    function getDraftData() {
+    function getDrafts() {
         try {
-            return JSON.parse(
-                localStorage.getItem(STORAGE_KEY) || '{}'
-            );
+            return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
         } catch {
             return {};
         }
     }
 
-    function saveDraftData(data) {
-        localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify(data)
-        );
+    function setDrafts(data) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     }
 
-    function getCurrentChatInfo() {
+    function getChatInfo() {
         const context = getContext();
 
-        let chatId = '';
-
-        try {
-            chatId =
-                context.getCurrentChatId?.() ||
-                context.chatId ||
-                context.chat_id ||
-                '';
-        } catch {
-            chatId = '';
-        }
+        let chatId =
+            context.getCurrentChatId?.() ||
+            context.chatId ||
+            context.chat_id ||
+            '';
 
         if (!chatId) {
             chatId = location.href;
@@ -77,7 +356,7 @@
             context.group_id ||
             '';
 
-        let characterName = '';
+        let name = '';
 
         try {
             const character =
@@ -85,18 +364,16 @@
                 context.character ||
                 null;
 
-            characterName =
+            name =
                 character?.name ||
                 character?.data?.name ||
                 '';
         } catch {
-            characterName = '';
+            name = '';
         }
 
-        if (!characterName) {
-            characterName = groupId
-                ? `群聊 ${groupId}`
-                : '当前聊天';
+        if (!name) {
+            name = groupId ? `群聊 ${groupId}` : '当前聊天';
         }
 
         const keyPrefix = groupId
@@ -105,34 +382,27 @@
 
         return {
             key: `${keyPrefix}__chat-${String(chatId)}`,
-            name: characterName,
+            name,
             chatId: String(chatId),
             groupId: String(groupId || ''),
         };
     }
 
     function updateStatus(text) {
-        const status = document.querySelector(
-            '#st-draft-backup-status'
-        );
+        const status = document.querySelector('#st-draft-backup-status');
 
         if (status) {
             status.textContent = text;
         }
     }
 
-    function saveCurrentDraft(text) {
-        const info = getCurrentChatInfo();
-        const drafts = getDraftData();
+    function saveDraft(text) {
+        const info = getChatInfo();
+        const drafts = getDrafts();
 
-        /*
-         * 输入框为空时，删除当前聊天的草稿。
-         * 发送消息后酒馆通常会清空输入框，
-         * 这样旧草稿不会在下次打开时重复出现。
-         */
         if (!text) {
             delete drafts[info.key];
-            saveDraftData(drafts);
+            setDrafts(drafts);
             updateStatus('当前没有未发送草稿');
             return;
         }
@@ -146,7 +416,7 @@
             updatedAt: Date.now(),
         };
 
-        saveDraftData(drafts);
+        setDrafts(drafts);
         updateStatus('已自动保存');
     }
 
@@ -154,7 +424,7 @@
         clearTimeout(saveTimer);
 
         saveTimer = setTimeout(() => {
-            saveCurrentDraft(text);
+            saveDraft(text);
         }, SAVE_DELAY);
     }
 
@@ -165,17 +435,13 @@
             return;
         }
 
-        const info = getCurrentChatInfo();
-        const drafts = getDraftData();
-        const draft = drafts[info.key];
+        const info = getChatInfo();
+        const draft = getDrafts()[info.key];
 
         if (!draft?.text) {
             return;
         }
 
-        /*
-         * 默认不覆盖用户当前已经输入的内容。
-         */
         if (!force && textarea.value) {
             return;
         }
@@ -190,19 +456,7 @@
         updateStatus('已恢复当前聊天草稿');
     }
 
-    function formatTime(timestamp) {
-        if (!timestamp) {
-            return '';
-        }
-
-        try {
-            return new Date(timestamp).toLocaleString();
-        } catch {
-            return '';
-        }
-    }
-
-    function createElement(tag, className, text) {
+    function createTextElement(tag, className, text) {
         const element = document.createElement(tag);
 
         if (className) {
@@ -216,15 +470,24 @@
         return element;
     }
 
-    function createBackupPanel() {
-        if (document.querySelector(`#${PANEL_ID}`)) {
+    function formatTime(timestamp) {
+        if (!timestamp) {
+            return '';
+        }
+
+        return new Date(timestamp).toLocaleString();
+    }
+
+    function createPanel() {
+        injectStyle();
+
+        if (document.getElementById(PANEL_ID)) {
             return;
         }
 
         const panel = document.createElement('div');
         panel.id = PANEL_ID;
-        panel.dataset.theme =
-            localStorage.getItem(THEME_KEY) || 'light';
+        panel.dataset.theme = localStorage.getItem(THEME_KEY) || 'light';
 
         const box = document.createElement('div');
         box.id = 'st-draft-backup-box';
@@ -232,13 +495,15 @@
         const header = document.createElement('div');
         header.id = 'st-draft-backup-header';
 
-        const title = createElement(
-            'strong',
-            'st-draft-backup-title',
+        const title = createTextElement(
+            'div',
+            '',
             '输入框备份'
         );
 
-        const closeButton = createElement(
+        title.id = 'st-draft-backup-title';
+
+        const closeButton = createTextElement(
             'button',
             '',
             '关闭'
@@ -253,30 +518,16 @@
         const themeArea = document.createElement('div');
         themeArea.id = 'st-draft-backup-theme-area';
 
-        const themeLabel = createElement(
-            'span',
-            '',
-            '外观'
-        );
+        const themeLabel = createTextElement('span', '', '外观');
 
         const themeButtons = document.createElement('div');
         themeButtons.className = 'st-draft-backup-theme-buttons';
 
-        const lightButton = createElement(
-            'button',
-            '',
-            '白色'
-        );
-
+        const lightButton = createTextElement('button', '', '白色');
         lightButton.id = 'st-draft-backup-theme-light';
         lightButton.type = 'button';
 
-        const darkButton = createElement(
-            'button',
-            '',
-            '黑色'
-        );
-
+        const darkButton = createTextElement('button', '', '黑色');
         darkButton.id = 'st-draft-backup-theme-dark';
         darkButton.type = 'button';
 
@@ -286,7 +537,7 @@
         themeArea.appendChild(themeLabel);
         themeArea.appendChild(themeButtons);
 
-        const status = createElement(
+        const status = createTextElement(
             'div',
             '',
             '备份保存在当前浏览器'
@@ -300,21 +551,11 @@
         const footer = document.createElement('div');
         footer.id = 'st-draft-backup-footer';
 
-        const refreshButton = createElement(
-            'button',
-            '',
-            '刷新列表'
-        );
-
+        const refreshButton = createTextElement('button', '', '刷新列表');
         refreshButton.id = 'st-draft-backup-refresh';
         refreshButton.type = 'button';
 
-        const clearButton = createElement(
-            'button',
-            '',
-            '删除全部'
-        );
-
+        const clearButton = createTextElement('button', '', '删除全部');
         clearButton.id = 'st-draft-backup-clear-all';
         clearButton.type = 'button';
 
@@ -330,31 +571,26 @@
         panel.appendChild(box);
         document.body.appendChild(panel);
 
-        closeButton.addEventListener('click', () => {
-            closeBackupPanel();
-        });
+        closeButton.addEventListener('click', closePanel);
 
         panel.addEventListener('click', event => {
             if (event.target === panel) {
-                closeBackupPanel();
+                closePanel();
             }
         });
 
         lightButton.addEventListener('click', () => {
-            setBackupTheme('light');
+            setTheme('light');
         });
 
         darkButton.addEventListener('click', () => {
-            setBackupTheme('dark');
+            setTheme('dark');
         });
 
-        refreshButton.addEventListener('click', () => {
-            renderBackupList();
-        });
+        refreshButton.addEventListener('click', renderList);
 
         clearButton.addEventListener('click', () => {
-            const drafts = getDraftData();
-            const count = Object.keys(drafts).length;
+            const count = Object.keys(getDrafts()).length;
 
             if (!count) {
                 updateStatus('没有可删除的备份');
@@ -366,49 +602,39 @@
             }
 
             localStorage.removeItem(STORAGE_KEY);
-            renderBackupList();
+            renderList();
             updateStatus('已删除全部备份');
         });
 
         list.addEventListener('click', event => {
-            const restoreButton =
-                event.target.closest(
-                    '[data-st-restore-key]'
-                );
-
-            const deleteButton =
-                event.target.closest(
-                    '[data-st-delete-key]'
-                );
+            const restoreButton = event.target.closest('[data-restore-key]');
+            const deleteButton = event.target.closest('[data-delete-key]');
 
             if (restoreButton) {
-                restoreDraft(
-                    restoreButton.dataset.stRestoreKey
-                );
+                restoreDraft(restoreButton.dataset.restoreKey);
             }
 
             if (deleteButton) {
-                deleteDraft(
-                    deleteButton.dataset.stDeleteKey
-                );
+                deleteDraft(deleteButton.dataset.deleteKey);
             }
         });
+
+        refreshThemeButtons();
     }
 
-    function setBackupTheme(theme) {
-        const panel = document.querySelector(
-            `#${PANEL_ID}`
-        );
+    function setTheme(theme) {
+        const panel = document.getElementById(PANEL_ID);
 
         if (!panel) {
             return;
         }
 
-        const finalTheme =
-            theme === 'dark' ? 'dark' : 'light';
+        const finalTheme = theme === 'dark' ? 'dark' : 'light';
 
         panel.dataset.theme = finalTheme;
         localStorage.setItem(THEME_KEY, finalTheme);
+
+        refreshThemeButtons();
 
         updateStatus(
             finalTheme === 'dark'
@@ -417,38 +643,54 @@
         );
     }
 
-    function openBackupPanel() {
-        createBackupPanel();
-        renderBackupList();
+    function refreshThemeButtons() {
+        const panel = document.getElementById(PANEL_ID);
+        const lightButton = document.getElementById('st-draft-backup-theme-light');
+        const darkButton = document.getElementById('st-draft-backup-theme-dark');
 
-        const panel = document.querySelector(
-            `#${PANEL_ID}`
+        if (!panel || !lightButton || !darkButton) {
+            return;
+        }
+
+        lightButton.classList.toggle(
+            'is-active',
+            panel.dataset.theme !== 'dark'
         );
 
-        if (panel) {
-            panel.dataset.theme =
-                localStorage.getItem(THEME_KEY) || 'light';
-
-            panel.style.display = 'block';
-        }
+        darkButton.classList.toggle(
+            'is-active',
+            panel.dataset.theme === 'dark'
+        );
     }
 
-    function closeBackupPanel() {
-        const panel = document.querySelector(
-            `#${PANEL_ID}`
-        );
+    function openPanel() {
+        createPanel();
+        renderList();
+
+        const panel = document.getElementById(PANEL_ID);
+
+        if (!panel) {
+            return;
+        }
+
+        panel.dataset.theme = localStorage.getItem(THEME_KEY) || 'light';
+        refreshThemeButtons();
+
+        panel.style.display = 'block';
+    }
+
+    function closePanel() {
+        const panel = document.getElementById(PANEL_ID);
 
         if (panel) {
             panel.style.display = 'none';
         }
     }
 
-    function renderBackupList() {
-        createBackupPanel();
+    function renderList() {
+        createPanel();
 
-        const list = document.querySelector(
-            '#st-draft-backup-list'
-        );
+        const list = document.getElementById('st-draft-backup-list');
 
         if (!list) {
             return;
@@ -456,71 +698,55 @@
 
         list.innerHTML = '';
 
-        const drafts = Object.values(getDraftData())
+        const drafts = Object.values(getDrafts())
             .sort((a, b) => {
-                return (b.updatedAt || 0) -
-                    (a.updatedAt || 0);
+                return (b.updatedAt || 0) - (a.updatedAt || 0);
             });
 
         if (!drafts.length) {
-            const empty = createElement(
-                'div',
-                'st-draft-backup-empty',
-                '暂时没有备份'
+            list.appendChild(
+                createTextElement(
+                    'div',
+                    'st-draft-backup-empty',
+                    '暂时没有备份'
+                )
             );
-
-            list.appendChild(empty);
             return;
         }
 
         drafts.forEach(draft => {
-            const card = createElement(
-                'div',
-                'st-draft-backup-card'
-            );
+            const card = createTextElement('div', 'st-draft-backup-card');
 
-            const name = createElement(
+            const name = createTextElement(
                 'div',
                 'st-draft-backup-card-name',
                 draft.name || '未命名聊天'
             );
 
-            const time = createElement(
+            const time = createTextElement(
                 'div',
                 'st-draft-backup-card-time',
                 formatTime(draft.updatedAt)
             );
 
-            const preview = createElement(
+            const preview = createTextElement(
                 'div',
                 'st-draft-backup-card-preview',
                 draft.text || ''
             );
 
-            const actions = createElement(
+            const actions = createTextElement(
                 'div',
                 'st-draft-backup-card-actions'
             );
 
-            const restoreButton = createElement(
-                'button',
-                '',
-                '恢复'
-            );
-
+            const restoreButton = createTextElement('button', '', '恢复');
             restoreButton.type = 'button';
-            restoreButton.dataset.stRestoreKey =
-                draft.key;
+            restoreButton.dataset.restoreKey = draft.key;
 
-            const deleteButton = createElement(
-                'button',
-                '',
-                '删除'
-            );
-
+            const deleteButton = createTextElement('button', '', '删除');
             deleteButton.type = 'button';
-            deleteButton.dataset.stDeleteKey =
-                draft.key;
+            deleteButton.dataset.deleteKey = draft.key;
 
             actions.appendChild(restoreButton);
             actions.appendChild(deleteButton);
@@ -535,8 +761,7 @@
     }
 
     function restoreDraft(key) {
-        const drafts = getDraftData();
-        const draft = drafts[key];
+        const draft = getDrafts()[key];
 
         if (!draft?.text) {
             updateStatus('找不到这条备份');
@@ -558,58 +783,43 @@
 
         lastText = textarea.value;
 
-        closeBackupPanel();
+        closePanel();
     }
 
     function deleteDraft(key) {
-        const drafts = getDraftData();
+        const drafts = getDrafts();
 
         if (!drafts[key]) {
             return;
         }
 
         delete drafts[key];
-        saveDraftData(drafts);
+        setDrafts(drafts);
 
-        renderBackupList();
+        renderList();
         updateStatus('已删除备份');
     }
 
-    function addBackupButtonToQrMenu() {
-        const rightList = document.querySelector(
-            QR_LIST_SELECTOR
-        );
+    function addButtonToQrAssistant() {
+        const rightList = document.querySelector(QR_LIST_SELECTOR);
 
         if (!rightList) {
             return;
         }
 
-        const oldButton = document.querySelector(
-            `#${BACKUP_BUTTON_ID}`
-        );
+        const oldButton = document.getElementById(BUTTON_ID);
 
-        /*
-         * 如果旧版本残留了右下角悬浮按钮，
-         * 先移除它。
-         */
-        if (
-            oldButton &&
-            !rightList.contains(oldButton)
-        ) {
+        if (oldButton && !rightList.contains(oldButton)) {
             oldButton.remove();
         }
 
-        if (
-            rightList.querySelector(
-                `#${BACKUP_BUTTON_ID}`
-            )
-        ) {
+        if (rightList.querySelector(`#${BUTTON_ID}`)) {
             return;
         }
 
         const button = document.createElement('button');
 
-        button.id = BACKUP_BUTTON_ID;
+        button.id = BUTTON_ID;
         button.type = 'button';
         button.className = 'action-item';
         button.dataset.label = '📦备份';
@@ -623,29 +833,20 @@
         button.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            openBackupPanel();
+            openPanel();
         });
 
         rightList.appendChild(button);
     }
 
     function watchQrAssistant() {
-        const qrMenu = document.querySelector(
-            QR_MENU_SELECTOR
-        );
+        const qrMenu = document.querySelector(QR_MENU_SELECTOR);
 
         if (!qrMenu) {
-            if (!qrRetryTimer) {
-                qrRetryTimer = setTimeout(() => {
-                    qrRetryTimer = null;
-                    watchQrAssistant();
-                }, 1000);
-            }
-
             return;
         }
 
-        addBackupButtonToQrMenu();
+        addButtonToQrAssistant();
 
         if (qrObserverStarted) {
             return;
@@ -654,7 +855,7 @@
         qrObserverStarted = true;
 
         const observer = new MutationObserver(() => {
-            addBackupButtonToQrMenu();
+            addButtonToQrAssistant();
         });
 
         observer.observe(qrMenu, {
@@ -670,16 +871,13 @@
             return;
         }
 
-        const info = getCurrentChatInfo();
+        const info = getChatInfo();
 
         if (info.key !== currentChatKey) {
             currentChatKey = info.key;
-            inputInitialized = false;
+            initialized = false;
             lastText = textarea.value;
 
-            /*
-             * 切换聊天时，只有输入框为空才恢复。
-             */
             if (!textarea.value) {
                 setTimeout(() => {
                     restoreCurrentDraft();
@@ -689,15 +887,12 @@
             return;
         }
 
-        if (!inputInitialized) {
-            inputInitialized = true;
+        if (!initialized) {
+            initialized = true;
             lastText = textarea.value;
             return;
         }
 
-        /*
-         * 捕获酒馆程序主动修改输入框的情况。
-         */
         if (textarea.value !== lastText) {
             lastText = textarea.value;
             scheduleSave(textarea.value);
@@ -731,17 +926,18 @@
         }
 
         clearTimeout(saveTimer);
-        saveCurrentDraft(textarea.value);
+        saveDraft(textarea.value);
     });
 
     document.addEventListener('keydown', event => {
         if (event.key === 'Escape') {
-            closeBackupPanel();
+            closePanel();
         }
     });
 
     function start() {
-        createBackupPanel();
+        injectStyle();
+        createPanel();
         watchQrAssistant();
         checkInput();
 
@@ -754,19 +950,13 @@
             restoreCurrentDraft();
         }, 1200);
 
-        console.log(
-            '[输入框实时备份] 已启动'
-        );
+        console.log('[输入框实时备份] 已启动：内置实心黑白主题版');
     }
 
-    if (
-        document.readyState === 'loading'
-    ) {
-        document.addEventListener(
-            'DOMContentLoaded',
-            start,
-            { once: true }
-        );
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start, {
+            once: true,
+        });
     } else {
         start();
     }
